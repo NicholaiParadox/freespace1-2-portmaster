@@ -34,9 +34,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/opt/sdl3 \
             -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=ON \
             -DSDL_OPENGL=OFF -DSDL_OPENGLES=ON -DSDL_VULKAN=OFF \
-            -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=OFF
+            -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_INSTALL=ON
           cmake --build sdl3-build
           cmake --install sdl3-build
+          ls -l /opt/sdl3/lib/libSDL3.so* /opt/sdl3/lib/pkgconfig/sdl3.pc
 
       - name: Compilar FFmpeg 7.1 minimo (sin librerias externas)
         run: |

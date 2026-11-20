@@ -1,0 +1,97 @@
+# Colócalo en tu repo como: .github/workflows/build-fs2open-r36s.yml
+# Ejecútalo desde la pestaña Actions -> "Build FS2 Open R36S (GLES)" -> Run workflow.
+name: Build FS2 Open R36S (GLES)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Rama o tag de scp-fs2open/fs2open.github.com"
+        default: "master"
+
+jobs:
+  build:
+    # Runner aarch64 nativo (gratis en repos públicos). En repos privados
+    # puede consumir minutos de pago.
+    runs-on: ubuntu-24.04-arm
+    # Mismo Debian que dArkOS (trixie) => mismas versiones de glibc/libstdc++
+    container: debian:trixie
+
+    steps:
+      - name: Dependencias
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git pkg-config ca-certificates \
+            python3 nasm yasm file patchelf \
+            libdrm-dev libgbm-dev libegl-dev libgles-dev libudev-dev \
+            libasound2-dev libopenal-dev libxkbcommon-dev
+
+      - name: Compilar SDL3 (solo KMSDRM + GLES, sin X11/Wayland)
+        run: |
+          git clone --depth 1 --branch release-3.2.x https://github.com/libsdl-org/SDL.git sdl3-src
+          cmake -S sdl3-src -B sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/sdl3 \
+            -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=ON \
+            -DSDL_OPENGL=OFF -DSDL_OPENGLES=ON -DSDL_VULKAN=OFF \
+            -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=OFF
+          cmake --build sdl3-build
+          cmake --install sdl3-build
+
+      - name: Compilar FFmpeg 7.1 minimo (sin librerias externas)
+        run: |
+          git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          cd ffmpeg-src
+          ./configure --prefix=/opt/ffmpeg --enable-shared --disable-static \
+            --disable-programs --disable-doc --disable-autodetect --disable-network \
+            --disable-avdevice --disable-avfilter
+          make -j"$(nproc)"
+          make install
+
+      - name: Clonar FS2 Open (con submodulos)
+        run: |
+          git clone --depth 1 --branch "${{ inputs.ref }}" \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/scp-fs2open/fs2open.github.com.git src
+
+      - name: Configurar
+        run: |
+          export PKG_CONFIG_PATH=/opt/sdl3/lib/pkgconfig:/opt/ffmpeg/lib/pkgconfig
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+            -DFSO_BUILD_WITH_OPENGL=ON -DFSO_BUILD_WITH_OPENGL_ES=ON \
+            -DFSO_BUILD_WITH_VULKAN=OFF -DFSO_BUILD_WITH_FFX=OFF \
+            -DFSO_BUILD_WITH_OPENXR=OFF -DFSO_BUILD_WITH_DISCORD=OFF \
+            -DFSO_BUILD_QTFRED=OFF -DFSO_USE_SPEECH=OFF -DFSO_BUILD_TESTS=OFF \
+            -DFSO_BUILD_INCLUDED_LIBS=ON -DFSO_USE_LTO=OFF \
+            -DFSO_BUILD_WITH_FFMPEG=ON -DFFMPEG_USE_PRECOMPILED=OFF \
+            -DSDL3_USE_PRECOMPILED=OFF \
+            -DCMAKE_C_FLAGS="-O2 -mtune=cortex-a35" \
+            -DCMAKE_CXX_FLAGS="-O2 -mtune=cortex-a35" \
+            -DCMAKE_JOB_POOLS=link=1 -DCMAKE_JOB_POOL_LINK=link
+
+      - name: Compilar
+        run: cmake --build build
+
+      - name: Empaquetar
+        run: |
+          mkdir -p pkg/FreeSpace2/lib
+          BIN=$(find build -type f -name 'fs2_open_*' ! -name '*.so*' -perm -u+x | head -n1)
+          echo "Binario: $BIN"; file "$BIN"
+          cp "$BIN" pkg/FreeSpace2/fs2_open
+          cp -a /opt/sdl3/lib/libSDL3.so* pkg/FreeSpace2/lib/
+          cp -a /opt/ffmpeg/lib/lib*.so* pkg/FreeSpace2/lib/
+          cp -aL /usr/lib/aarch64-linux-gnu/libopenal.so.1 pkg/FreeSpace2/lib/ || true
+          # diagnostico: dependencias que siguen sin resolverse
+          LD_LIBRARY_PATH=pkg/FreeSpace2/lib ldd pkg/FreeSpace2/fs2_open | tee pkg/FreeSpace2/ldd.txt
+          echo "(el lanzador FreeSpace2.sh se copia a mano a /roms2/ports)"
+          strip --strip-unneeded pkg/FreeSpace2/fs2_open pkg/FreeSpace2/lib/*.so* || true
+          tar -C pkg -czf fs2open-r36s.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fs2open-r36s
+          path: |
+            fs2open-r36s.tar.gz
+            build/**/*.log
